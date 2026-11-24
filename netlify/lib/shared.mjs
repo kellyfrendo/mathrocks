@@ -53,7 +53,9 @@ export function json(statusCode, body, extraHeaders = {}) {
 /** Bind Blobs to this Lambda invocation, then open the shared store. */
 export function store(event) {
   if (event) connectLambda(event)
-  return getStore({ name: 'math-rocks', consistency: 'strong' })
+  // Default eventual consistency — strong mode needs uncachedEdgeURL not
+  // always present on classic Lambda handlers.
+  return getStore('math-rocks')
 }
 
 export function cleanName(raw) {
