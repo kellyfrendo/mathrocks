@@ -72,7 +72,7 @@ const state = {
   streak: 0,
   gear: 1,
   scoreboardLevel: 1,
-  boardView: 'scores', // 'scores' | 'tricky'
+  trickyLevel: 1,
   boardSource: 'local',
   missWeights: new Map(),
   soundsOn: loadSoundsPref(),
@@ -360,6 +360,7 @@ function render() {
   else if (state.screen === 'play') renderPlay()
   else if (state.screen === 'gameover') renderGameOver()
   else if (state.screen === 'scoreboard') renderScoreboard()
+  else if (state.screen === 'tricky') renderTricky()
 }
 
 function renderMenu() {
@@ -380,6 +381,7 @@ function renderMenu() {
         </form>
         <div class="menu-actions">
           <button class="btn btn-ghost" type="button" id="btn-scores" data-nav="scoreboard">Scoreboard</button>
+          <button class="btn btn-ghost" type="button" id="btn-tricky" data-nav="tricky">Tricky questions</button>
         </div>
       </div>
     </main>
@@ -397,13 +399,23 @@ function renderMenu() {
     state.screen = 'levels'
     render()
   })
-  app.querySelector('#btn-scores').addEventListener('click', (e) => {
-    e.preventDefault()
-    e.stopPropagation()
+  const rememberName = () => {
     const typed = input.value.trim()
     if (typed) state.playerName = typed.slice(0, 16)
     state.lastHighlight = state.playerName || ''
+  }
+  app.querySelector('#btn-scores').addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    rememberName()
     state.screen = 'scoreboard'
+    render()
+  })
+  app.querySelector('#btn-tricky').addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    rememberName()
+    state.screen = 'tricky'
     render()
   })
 }
@@ -936,7 +948,6 @@ async function endGame() {
   const levelId = state.level?.id || 1
   state.lastHighlight = state.playerName
   state.scoreboardLevel = levelId
-  state.boardView = 'scores'
   state.screen = 'gameover'
   render()
   const result = await submitScore(state.playerName, state.score, levelId, state.gear)
@@ -944,9 +955,9 @@ async function endGame() {
   if (state.screen === 'gameover') render()
 }
 
-function levelTabsMarkup(activeLevel) {
+function levelTabsMarkup(activeLevel, label = 'Scoreboard levels') {
   return `
-    <div class="level-tabs" role="tablist" aria-label="Scoreboard levels">
+    <div class="level-tabs" role="tablist" aria-label="${label}">
       ${LEVELS.map(
         (lvl) => `
         <button
@@ -961,15 +972,6 @@ function levelTabsMarkup(activeLevel) {
   `
 }
 
-function viewTabsMarkup(activeView) {
-  return `
-    <div class="view-tabs" role="tablist" aria-label="Board views">
-      <button type="button" class="view-tab${activeView === 'scores' ? ' active' : ''}" data-board-view="scores" role="tab" aria-selected="${activeView === 'scores' ? 'true' : 'false'}">Top Pilots</button>
-      <button type="button" class="view-tab${activeView === 'tricky' ? ' active' : ''}" data-board-view="tricky" role="tab" aria-selected="${activeView === 'tricky' ? 'true' : 'false'}">Tricky questions</button>
-    </div>
-  `
-}
-
 function sourceNoteMarkup(source) {
   if (source === 'remote') {
     return `<p class="board-source">Shared across devices</p>`
@@ -977,17 +979,10 @@ function sourceNoteMarkup(source) {
   return `<p class="board-source">Saved on this device (shared board offline)</p>`
 }
 
-function bindBoardChrome(panel, highlightName, afterPaint) {
+function bindLevelTabs(panel, onPick) {
   panel.querySelectorAll('[data-board-level]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      state.scoreboardLevel = Number(btn.dataset.boardLevel)
-      paintBoardPanel(panel, highlightName).then(afterPaint)
-    })
-  })
-  panel.querySelectorAll('[data-board-view]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.boardView = btn.dataset.boardView === 'tricky' ? 'tricky' : 'scores'
-      paintBoardPanel(panel, highlightName).then(afterPaint)
+      onPick(Number(btn.dataset.boardLevel))
     })
   })
 }
@@ -995,47 +990,49 @@ function bindBoardChrome(panel, highlightName, afterPaint) {
 async function paintBoardPanel(panel, highlightName) {
   if (!panel) return
   const levelId = state.scoreboardLevel || 1
-  const view = state.boardView || 'scores'
   panel.innerHTML = `
     ${levelTabsMarkup(levelId)}
-    ${viewTabsMarkup(view)}
     <p class="board-loading">Loading…</p>
   `
-  if (view === 'tricky') {
-    const { questions, source } = await fetchMisses(levelId)
-    state.boardSource = source
-    if (state.scoreboardLevel !== levelId || state.boardView !== 'tricky') return
-    panel.innerHTML = `
-      ${levelTabsMarkup(levelId)}
-      ${viewTabsMarkup('tricky')}
-      <h3 class="board-title">Tricky questions · Level ${levelId}</h3>
-      ${sourceNoteMarkup(source)}
-      <div class="board-head tricky-head" aria-hidden="true">
-        <span></span>
-        <span>Question</span>
-        <span>Misses</span>
-        <span>Rate</span>
-      </div>
-      ${trickyList(questions)}
-    `
-  } else {
-    const { scores, source } = await fetchScores(levelId)
-    state.boardSource = source
-    if (state.scoreboardLevel !== levelId || state.boardView !== 'scores') return
-    panel.innerHTML = `
-      ${levelTabsMarkup(levelId)}
-      ${viewTabsMarkup('scores')}
-      <h3 class="board-title">Top Pilots · Level ${levelId}</h3>
-      ${sourceNoteMarkup(source)}
-      <div class="board-head" aria-hidden="true">
-        <span></span>
-        <span>Pilot</span>
-        <span>Score</span>
-        <span>Gear</span>
-      </div>
-      ${boardList(sortScores(scores), highlightName)}
-    `
-  }
+  const { scores, source } = await fetchScores(levelId)
+  state.boardSource = source
+  if (state.scoreboardLevel !== levelId) return
+  panel.innerHTML = `
+    ${levelTabsMarkup(levelId)}
+    <h3 class="board-title">Top Pilots · Level ${levelId}</h3>
+    ${sourceNoteMarkup(source)}
+    <div class="board-head" aria-hidden="true">
+      <span></span>
+      <span>Pilot</span>
+      <span>Score</span>
+      <span>Gear</span>
+    </div>
+    ${boardList(sortScores(scores), highlightName)}
+  `
+}
+
+async function paintTrickyPanel(panel) {
+  if (!panel) return
+  const levelId = state.trickyLevel || 1
+  panel.innerHTML = `
+    ${levelTabsMarkup(levelId, 'Tricky question levels')}
+    <p class="board-loading">Loading…</p>
+  `
+  const { questions, source } = await fetchMisses(levelId)
+  state.boardSource = source
+  if (state.trickyLevel !== levelId) return
+  panel.innerHTML = `
+    ${levelTabsMarkup(levelId, 'Tricky question levels')}
+    <h3 class="board-title">Most missed · Level ${levelId}</h3>
+    ${sourceNoteMarkup(source)}
+    <div class="board-head tricky-head" aria-hidden="true">
+      <span></span>
+      <span>Question</span>
+      <span>Misses</span>
+      <span>Rate</span>
+    </div>
+    ${trickyList(questions)}
+  `
 }
 
 function renderGameOver() {
@@ -1062,7 +1059,11 @@ function renderGameOver() {
   `
 
   const panel = app.querySelector('#board-panel')
-  const wire = () => bindBoardChrome(panel, state.playerName, wire)
+  const wire = () =>
+    bindLevelTabs(panel, (id) => {
+      state.scoreboardLevel = id
+      paintBoardPanel(panel, state.playerName).then(wire)
+    })
   paintBoardPanel(panel, state.playerName).then(wire)
 
   app.querySelector('#btn-replay').addEventListener('click', () => startGame(state.level))
@@ -1087,7 +1088,7 @@ function renderScoreboard() {
     </div>
     <main class="screen overlay-card">
       <h2 class="screen-heading">Scoreboard</h2>
-      <p class="screen-sub">Shared best scores, gears &amp; tricky questions</p>
+      <p class="screen-sub">Shared best scores &amp; fastest gear by level</p>
       <div class="panel board-panel" id="board-panel"></div>
       <div class="action-stack">
         <button class="btn btn-primary" type="button" id="btn-back">Back</button>
@@ -1096,8 +1097,45 @@ function renderScoreboard() {
   `
 
   const panel = app.querySelector('#board-panel')
-  const wire = () => bindBoardChrome(panel, state.lastHighlight, wire)
+  const wire = () =>
+    bindLevelTabs(panel, (id) => {
+      state.scoreboardLevel = id
+      paintBoardPanel(panel, state.lastHighlight).then(wire)
+    })
   paintBoardPanel(panel, state.lastHighlight).then(wire)
+
+  app.querySelector('#btn-back').addEventListener('click', () => {
+    state.screen = 'menu'
+    render()
+  })
+}
+
+function renderTricky() {
+  const levelId = state.trickyLevel || 1
+  state.trickyLevel = levelId
+
+  app.innerHTML = `
+    ${backdrop()}
+    <div class="planet-shell menu-planet" aria-hidden="true">
+      <div class="planet-surface">${planetSurfaceInner()}</div>
+    </div>
+    <main class="screen overlay-card">
+      <h2 class="screen-heading">Tricky questions</h2>
+      <p class="screen-sub">Questions missed most often — they show up a bit more in play</p>
+      <div class="panel board-panel" id="tricky-panel"></div>
+      <div class="action-stack">
+        <button class="btn btn-primary" type="button" id="btn-back">Back</button>
+      </div>
+    </main>
+  `
+
+  const panel = app.querySelector('#tricky-panel')
+  const wire = () =>
+    bindLevelTabs(panel, (id) => {
+      state.trickyLevel = id
+      paintTrickyPanel(panel).then(wire)
+    })
+  paintTrickyPanel(panel).then(wire)
 
   app.querySelector('#btn-back').addEventListener('click', () => {
     state.screen = 'menu'

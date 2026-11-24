@@ -49,7 +49,7 @@ Spaces are optional (`7+8` works). Order is shuffled at the start of each level.
 - Incorrect / planet-hit questions repeat until answered correctly
 - Speed gear starts at 1st; every 10 correct in a row shifts up (faster rocks)
 - 3 lives; shared scoreboard (Netlify Functions + Blobs) with localStorage fallback
-- Tricky questions tracker (misses + miss rate) with weighted replay
+- Tricky questions screen (misses + miss rate by level) with weighted replay
 - Keyboard answer entry
 - Optional “Sounds on” on level select (correct / incorrect / gear-up cues)
 
