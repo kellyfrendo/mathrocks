@@ -48,6 +48,16 @@ Spaces are optional (`7+8` works). Order is shuffled at the start of each level.
 - Levels 1–4 with editable starter question banks
 - Incorrect / planet-hit questions repeat until answered correctly
 - Speed gear starts at 1st; every 10 correct in a row shifts up (faster rocks)
-- 3 lives; score + localStorage scoreboard
+- 3 lives; shared scoreboard (Netlify Functions + Blobs) with localStorage fallback
+- Tricky questions tracker (misses + miss rate) with weighted replay
 - Keyboard answer entry
 - Optional “Sounds on” on level select (correct / incorrect / gear-up cues)
+
+## Shared data (Netlify)
+
+Production uses **Netlify Functions** + **Netlify Blobs** (no extra accounts):
+
+- `/.netlify/functions/scores` — shared best scores per player / level / gear
+- `/.netlify/functions/misses` — miss counts & attempts per question / level
+
+Inputs are validated and rate-limited on the functions. If the API is unreachable (local Vite without `netlify dev`, or offline), the game keeps using **localStorage** so play still works.

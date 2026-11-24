@@ -1,14 +1,22 @@
 import './style.css'
-import { loadStarterProblems } from './questions.js'
+import { loadStarterProblems, parseQuestion } from './questions.js'
 import { unlockAudio, playCorrect, playIncorrect, playGearUp } from './sounds.js'
+import {
+  canonicalQuestion,
+  fetchMisses,
+  fetchScores,
+  missWeightMap,
+  recordOutcome,
+  submitScore,
+} from './api.js'
 
-const STORAGE_KEY = 'math-rocks-scores-v2'
-const STORAGE_KEY_LEGACY = 'math-rocks-scores-v1'
 const SOUND_KEY = 'math-rocks-sounds-on'
 const MAX_LIVES = 3
 const MAX_BOARD = 10
 const STREAK_PER_GEAR = 10
 const MAX_GEAR = 5
+const TRICKY_TOP_N = 10
+const TRICKY_INJECT_CHANCE = 0.32
 
 const LEVELS = [
   {
@@ -64,6 +72,9 @@ const state = {
   streak: 0,
   gear: 1,
   scoreboardLevel: 1,
+  boardView: 'scores', // 'scores' | 'tricky'
+  boardSource: 'local',
+  missWeights: new Map(),
   soundsOn: loadSoundsPref(),
   paused: false,
   avoidProblemText: '',
@@ -201,6 +212,11 @@ function nextProblem() {
     state.challengeTier += 1
   }
   const prev = state.problem?.text || ''
+  // Occasionally re-serve a frequently missed question
+  if (Math.random() < TRICKY_INJECT_CHANCE) {
+    const tricky = pickTrickyProblem(prev)
+    if (tricky) return tricky
+  }
   return makeHarderProblem(state.level, state.challengeTier, prev)
 }
 
@@ -210,67 +226,42 @@ function fallMsForGear() {
   return Math.max(3500, Math.round(state.level.fallMs * gearFactor))
 }
 
-function normalizeScoreEntry(raw) {
-  return {
-    name: String(raw?.name || 'Player').slice(0, 16),
-    level: Number(raw?.level) || 1,
-    score: Number(raw?.score) || 0,
-    gear: Math.max(1, Number(raw?.gear) || 1),
-    at: Number(raw?.at) || Date.now(),
-  }
-}
-
-function loadScores() {
-  try {
-    let raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
-      // One-time migrate from v1 (single best score, no per-level split)
-      const legacy = localStorage.getItem(STORAGE_KEY_LEGACY)
-      if (legacy) {
-        const parsed = JSON.parse(legacy)
-        const migrated = (Array.isArray(parsed) ? parsed : []).map(normalizeScoreEntry)
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
-        raw = JSON.stringify(migrated)
-      }
-    }
-    const parsed = raw ? JSON.parse(raw) : []
-    return (Array.isArray(parsed) ? parsed : []).map(normalizeScoreEntry)
-  } catch {
-    return []
-  }
-}
-
-/** Best score + highest gear reached, stored per player per level. */
-function saveScore(name, score, levelId, gearReached = 1) {
-  const clean = String(name || 'Player').trim().slice(0, 16) || 'Player'
-  const level = Number(levelId) || 1
-  const gear = Math.max(1, Number(gearReached) || 1)
-  const scores = loadScores()
-  const existing = scores.find(
-    (s) => s.name.toLowerCase() === clean.toLowerCase() && s.level === level,
-  )
-  if (existing) {
-    if (score > existing.score) {
-      existing.score = score
-      existing.at = Date.now()
-    }
-    if (gear > existing.gear) existing.gear = gear
-  } else {
-    scores.push({ name: clean, level, score, gear, at: Date.now() })
-  }
-  scores.sort(
-    (a, b) => b.score - a.score || b.gear - a.gear || a.name.localeCompare(b.name),
-  )
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(scores.slice(0, 200)))
-  return scoresForLevel(level)
-}
-
-function scoresForLevel(levelId) {
-  const level = Number(levelId) || 1
-  return loadScores()
-    .filter((s) => s.level === level)
+function sortScores(scores) {
+  return [...scores]
     .sort((a, b) => b.score - a.score || b.gear - a.gear || a.name.localeCompare(b.name))
     .slice(0, MAX_BOARD)
+}
+
+/** Weight-shuffle so frequently missed questions tend to appear sooner. */
+function weightShuffleProblems(problems, missMap) {
+  if (!problems.length) return []
+  const scored = problems.map((p, i) => {
+    const key = canonicalQuestion(p.source || p.text) || p.text
+    const row = missMap?.get(key)
+    const misses = Number(row?.misses) || 0
+    const weight = 1 + Math.min(8, misses) * 1.4 + Math.random()
+    return { p, i, weight }
+  })
+  scored.sort((a, b) => b.weight - a.weight)
+  return scored.map((row) => row.p)
+}
+
+function pickTrickyProblem(avoidText = '') {
+  if (!state.missWeights?.size) return null
+  const ranked = [...state.missWeights.values()]
+    .filter((row) => (row.misses || 0) > 0)
+    .sort((a, b) => b.misses - a.misses)
+    .slice(0, 8)
+  if (!ranked.length) return null
+  const pick = ranked[randInt(0, ranked.length - 1)]
+  const parsed = parseQuestion(pick.question)
+  if (!parsed) return null
+  if (parsed.text === avoidText) return null
+  return { ...parsed, fromStarter: false, boosted: true }
+}
+
+function problemLabel(problem) {
+  return canonicalQuestion(problem?.source || problem?.text) || problem?.text || ''
 }
 
 function starsMarkup(count = 48) {
@@ -474,19 +465,21 @@ function renderLevels() {
   })
 }
 
-function startGame(level) {
+async function startGame(level) {
   state.level = level
   state.score = 0
   state.lives = MAX_LIVES
   state.answer = ''
   state.screen = 'play'
-  state.queue = shuffle(loadStarterProblems(level.id))
-  state.startersDone = state.queue.length === 0
   state.challengeTier = 0
   state.streak = 0
   state.gear = 1
   state.paused = false
   state.avoidProblemText = ''
+  state.missWeights = await missWeightMap(level.id)
+  const starters = loadStarterProblems(level.id)
+  state.queue = weightShuffleProblems(starters, state.missWeights)
+  state.startersDone = state.queue.length === 0
   state.fallMs = fallMsForGear()
   render()
 }
@@ -785,6 +778,11 @@ function onCorrect() {
   state.score += state.gear
   sfx('correct')
   bumpStreakAndMaybeGear()
+  const label = problemLabel(state.problem)
+  if (label && state.level) {
+    recordOutcome(state.level.id, label, 'hit')
+    bumpLocalMissWeight(label, 'hit')
+  }
   syncHud()
   flash('good')
   explodeRock()
@@ -845,6 +843,11 @@ function onWrong() {
     setTimeout(() => box.classList.remove('shake'), 320)
   }
   state.streak = 0
+  const label = problemLabel(state.problem)
+  if (label && state.level) {
+    recordOutcome(state.level.id, label, 'miss')
+    bumpLocalMissWeight(label, 'miss')
+  }
   requeueProblem(state.problem)
   showCorrectAnswer()
   loseLife('wrong')
@@ -874,9 +877,32 @@ function onMiss() {
   sfx('incorrect')
   flash('bad')
   state.streak = 0
+  const label = problemLabel(state.problem)
+  if (label && state.level) {
+    recordOutcome(state.level.id, label, 'miss')
+    bumpLocalMissWeight(label, 'miss')
+  }
   requeueProblem(state.problem)
   showCorrectAnswer()
   loseLife('timeout')
+}
+
+function bumpLocalMissWeight(question, outcome) {
+  if (!state.missWeights) state.missWeights = new Map()
+  const prev = state.missWeights.get(question) || {
+    question,
+    misses: 0,
+    attempts: 0,
+    missRate: 0,
+  }
+  const misses = prev.misses + (outcome === 'miss' ? 1 : 0)
+  const attempts = prev.attempts + 1
+  state.missWeights.set(question, {
+    question,
+    misses,
+    attempts,
+    missRate: attempts ? misses / attempts : 0,
+  })
 }
 
 function loseLife(reason = 'miss') {
@@ -903,16 +929,19 @@ function loseLife(reason = 'miss') {
   }
 }
 
-function endGame() {
+async function endGame() {
   stopFall()
   state.paused = false
   window.removeEventListener('keydown', onKeyDown)
   const levelId = state.level?.id || 1
-  saveScore(state.playerName, state.score, levelId, state.gear)
   state.lastHighlight = state.playerName
   state.scoreboardLevel = levelId
+  state.boardView = 'scores'
   state.screen = 'gameover'
   render()
+  const result = await submitScore(state.playerName, state.score, levelId, state.gear)
+  state.boardSource = result.source
+  if (state.screen === 'gameover') render()
 }
 
 function levelTabsMarkup(activeLevel) {
@@ -932,33 +961,86 @@ function levelTabsMarkup(activeLevel) {
   `
 }
 
-function bindLevelTabs(root, onChange) {
-  root.querySelectorAll('[data-board-level]').forEach((btn) => {
+function viewTabsMarkup(activeView) {
+  return `
+    <div class="view-tabs" role="tablist" aria-label="Board views">
+      <button type="button" class="view-tab${activeView === 'scores' ? ' active' : ''}" data-board-view="scores" role="tab" aria-selected="${activeView === 'scores' ? 'true' : 'false'}">Top Pilots</button>
+      <button type="button" class="view-tab${activeView === 'tricky' ? ' active' : ''}" data-board-view="tricky" role="tab" aria-selected="${activeView === 'tricky' ? 'true' : 'false'}">Tricky questions</button>
+    </div>
+  `
+}
+
+function sourceNoteMarkup(source) {
+  if (source === 'remote') {
+    return `<p class="board-source">Shared across devices</p>`
+  }
+  return `<p class="board-source">Saved on this device (shared board offline)</p>`
+}
+
+function bindBoardChrome(panel, highlightName, afterPaint) {
+  panel.querySelectorAll('[data-board-level]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = Number(btn.dataset.boardLevel)
-      state.scoreboardLevel = id
-      onChange(id)
+      state.scoreboardLevel = Number(btn.dataset.boardLevel)
+      paintBoardPanel(panel, highlightName).then(afterPaint)
+    })
+  })
+  panel.querySelectorAll('[data-board-view]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.boardView = btn.dataset.boardView === 'tricky' ? 'tricky' : 'scores'
+      paintBoardPanel(panel, highlightName).then(afterPaint)
     })
   })
 }
 
-function renderBoardPanel(levelId, highlightName, title = 'Top Pilots') {
-  const scores = scoresForLevel(levelId)
-  return `
+async function paintBoardPanel(panel, highlightName) {
+  if (!panel) return
+  const levelId = state.scoreboardLevel || 1
+  const view = state.boardView || 'scores'
+  panel.innerHTML = `
     ${levelTabsMarkup(levelId)}
-    <h3 class="board-title">${title} · Level ${levelId}</h3>
-    <div class="board-head" aria-hidden="true">
-      <span></span>
-      <span>Pilot</span>
-      <span>Score</span>
-      <span>Gear</span>
-    </div>
-    ${boardList(scores, highlightName)}
+    ${viewTabsMarkup(view)}
+    <p class="board-loading">Loading…</p>
   `
+  if (view === 'tricky') {
+    const { questions, source } = await fetchMisses(levelId)
+    state.boardSource = source
+    if (state.scoreboardLevel !== levelId || state.boardView !== 'tricky') return
+    panel.innerHTML = `
+      ${levelTabsMarkup(levelId)}
+      ${viewTabsMarkup('tricky')}
+      <h3 class="board-title">Tricky questions · Level ${levelId}</h3>
+      ${sourceNoteMarkup(source)}
+      <div class="board-head tricky-head" aria-hidden="true">
+        <span></span>
+        <span>Question</span>
+        <span>Misses</span>
+        <span>Rate</span>
+      </div>
+      ${trickyList(questions)}
+    `
+  } else {
+    const { scores, source } = await fetchScores(levelId)
+    state.boardSource = source
+    if (state.scoreboardLevel !== levelId || state.boardView !== 'scores') return
+    panel.innerHTML = `
+      ${levelTabsMarkup(levelId)}
+      ${viewTabsMarkup('scores')}
+      <h3 class="board-title">Top Pilots · Level ${levelId}</h3>
+      ${sourceNoteMarkup(source)}
+      <div class="board-head" aria-hidden="true">
+        <span></span>
+        <span>Pilot</span>
+        <span>Score</span>
+        <span>Gear</span>
+      </div>
+      ${boardList(sortScores(scores), highlightName)}
+    `
+  }
 }
 
 function renderGameOver() {
   const levelId = state.scoreboardLevel || state.level?.id || 1
+  state.scoreboardLevel = levelId
 
   app.innerHTML = `
     ${backdrop()}
@@ -970,9 +1052,7 @@ function renderGameOver() {
       <p class="screen-sub">${escapeHtml(state.playerName)} · Level ${state.level?.id || '?'}</p>
       <p class="score-big">${state.score}</p>
       <p class="screen-sub">Final score · Top speed ${gearLabel(state.gear)} gear</p>
-      <div class="panel board-panel" id="board-panel">
-        ${renderBoardPanel(levelId, state.playerName)}
-      </div>
+      <div class="panel board-panel" id="board-panel"></div>
       <div class="action-stack">
         <button class="btn btn-primary" type="button" id="btn-replay">Play Again</button>
         <button class="btn btn-ghost" type="button" id="btn-levels">Change Level</button>
@@ -982,13 +1062,8 @@ function renderGameOver() {
   `
 
   const panel = app.querySelector('#board-panel')
-  const rebind = () => {
-    bindLevelTabs(panel, (id) => {
-      panel.innerHTML = renderBoardPanel(id, state.playerName)
-      rebind()
-    })
-  }
-  rebind()
+  const wire = () => bindBoardChrome(panel, state.playerName, wire)
+  paintBoardPanel(panel, state.playerName).then(wire)
 
   app.querySelector('#btn-replay').addEventListener('click', () => startGame(state.level))
   app.querySelector('#btn-levels').addEventListener('click', () => {
@@ -1003,6 +1078,7 @@ function renderGameOver() {
 
 function renderScoreboard() {
   const levelId = state.scoreboardLevel || 1
+  state.scoreboardLevel = levelId
 
   app.innerHTML = `
     ${backdrop()}
@@ -1011,10 +1087,8 @@ function renderScoreboard() {
     </div>
     <main class="screen overlay-card">
       <h2 class="screen-heading">Scoreboard</h2>
-      <p class="screen-sub">Best scores &amp; fastest gear by level</p>
-      <div class="panel board-panel" id="board-panel">
-        ${renderBoardPanel(levelId, state.lastHighlight)}
-      </div>
+      <p class="screen-sub">Shared best scores, gears &amp; tricky questions</p>
+      <div class="panel board-panel" id="board-panel"></div>
       <div class="action-stack">
         <button class="btn btn-primary" type="button" id="btn-back">Back</button>
       </div>
@@ -1022,13 +1096,8 @@ function renderScoreboard() {
   `
 
   const panel = app.querySelector('#board-panel')
-  const rebind = () => {
-    bindLevelTabs(panel, (id) => {
-      panel.innerHTML = renderBoardPanel(id, state.lastHighlight)
-      rebind()
-    })
-  }
-  rebind()
+  const wire = () => bindBoardChrome(panel, state.lastHighlight, wire)
+  paintBoardPanel(panel, state.lastHighlight).then(wire)
 
   app.querySelector('#btn-back').addEventListener('click', () => {
     state.screen = 'menu'
@@ -1052,6 +1121,29 @@ function boardList(scores, highlightName = '') {
             <span class="board-name">${escapeHtml(s.name)}</span>
             <span class="board-score">${s.score}</span>
             <span class="board-gear">${gearLabel(s.gear)}</span>
+          </li>`
+        })
+        .join('')}
+    </ol>
+  `
+}
+
+function trickyList(questions) {
+  const rows = (questions || []).slice(0, TRICKY_TOP_N)
+  if (!rows.length) {
+    return `<p class="board-empty">No tricky questions yet for this level — keep practicing!</p>`
+  }
+  return `
+    <ol class="board-list">
+      ${rows
+        .map((q, i) => {
+          const rate = Math.round((Number(q.missRate) || 0) * 100)
+          return `
+          <li class="board-row tricky-row">
+            <span class="board-rank">${i + 1}</span>
+            <span class="board-name">${escapeHtml(q.question)}</span>
+            <span class="board-score">${q.misses}</span>
+            <span class="board-gear">${rate}%</span>
           </li>`
         })
         .join('')}

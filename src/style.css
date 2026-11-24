@@ -1146,6 +1146,41 @@ button {
   background: rgba(247, 249, 255, 0.12);
 }
 
+.view-tabs {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin: 0.55rem 0 0.35rem;
+}
+
+.view-tab {
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(8, 14, 40, 0.45);
+  color: #d7def7;
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.view-tab:hover {
+  border-color: rgba(255, 214, 120, 0.55);
+}
+
+.view-tab.active {
+  background: linear-gradient(180deg, #ffe7a8, #f0b35a);
+  color: #1a1630;
+  border-color: transparent;
+}
+
+.board-source,
+.board-loading {
+  margin: 0.2rem 0 0.55rem;
+  font-size: 0.85rem;
+  color: rgba(215, 222, 247, 0.72);
+}
+
 .level-tab.active {
   color: #fff;
   background: linear-gradient(180deg, #9b6cff, #5b28c4);

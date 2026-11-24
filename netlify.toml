@@ -1,6 +1,21 @@
 [build]
   command = "npm run build"
   publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/scores"
+  to = "/.netlify/functions/scores"
+  status = 200
+
+[[redirects]]
+  from = "/api/misses"
+  to = "/.netlify/functions/misses"
+  status = 200
 
 [[redirects]]
   from = "/*"
