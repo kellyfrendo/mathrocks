@@ -52,7 +52,7 @@ export async function handler(event) {
     return json(429, { error: 'Too many requests' })
   }
 
-  const blobStore = store()
+  const blobStore = store(event)
 
   if (event.httpMethod === 'GET') {
     const level = cleanLevel(event.queryStringParameters?.level)

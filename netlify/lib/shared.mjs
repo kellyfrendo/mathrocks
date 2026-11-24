@@ -1,4 +1,4 @@
-import { getStore } from '@netlify/blobs'
+import { connectLambda, getStore } from '@netlify/blobs'
 
 export const MAX_NAME = 16
 export const MAX_SCORE = 99999
@@ -50,7 +50,9 @@ export function json(statusCode, body, extraHeaders = {}) {
   }
 }
 
-export function store() {
+/** Bind Blobs to this Lambda invocation, then open the shared store. */
+export function store(event) {
+  if (event) connectLambda(event)
   return getStore({ name: 'math-rocks', consistency: 'strong' })
 }
 
