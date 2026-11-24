@@ -9,7 +9,7 @@ import {
   rateLimit,
   store,
   MAX_BOARD,
-} from './_shared.mjs'
+} from '../lib/shared.mjs'
 
 const SCORES_KEY = 'scores-v1'
 

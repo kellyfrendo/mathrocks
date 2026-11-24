@@ -5,7 +5,7 @@ import {
   json,
   rateLimit,
   store,
-} from './_shared.mjs'
+} from '../lib/shared.mjs'
 
 const MISSES_KEY = 'misses-v1'
 const TOP_N = 12
